@@ -59,6 +59,24 @@
                 ]
             ],
             "default": 0
+        },
+        {
+            "title": "Zeitplan aktiv (Bildschirm nachts ausschalten)",
+            "name": "schedule_enabled",
+            "type": "boolean",
+            "default": true
+        },
+        {
+            "title": "Ausschalten um (HH:MM)",
+            "name": "off_time",
+            "type": "string",
+            "default": "22:30"
+        },
+        {
+            "title": "Einschalten um (HH:MM)",
+            "name": "on_time",
+            "type": "string",
+            "default": "07:30"
         }
     ]
 }
