@@ -1,0 +1,13 @@
+{
+    "name": "Kerzen Loop Player",
+    "author": "XTRA",
+    "desc": "Mehrere Videos nahtlos geloopt, nacheinander, mit Zeitplan zum Ein-/Ausschalten des Bildschirms.",
+    "platforms": [
+        "pi-4",
+        "pi-5"
+    ],
+    "offline": {
+        "support": "yes",
+        "info": "Zeitplan braucht eine korrekte Systemzeit (NTP)"
+    }
+}

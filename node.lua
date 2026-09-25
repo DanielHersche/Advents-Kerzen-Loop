@@ -25,6 +25,21 @@ local function reset()
     cur, prev, nxt, nxt_idx, idx = nil, nil, nil, nil, 0
 end
 
+-- Zeitplan: der Service meldet "on" oder "off"
+local screen_on = true
+util.data_mapper{
+    power = function(state)
+        local new_state = (state ~= "off")
+        if new_state ~= screen_on then
+            screen_on = new_state
+            if not screen_on then
+                -- Filme freigeben, solange der Bildschirm aus ist
+                reset()
+            end
+        end
+    end,
+}
+
 local function load(item)
     if item.kind == "video" then
         return resource.load_video{
@@ -118,6 +133,9 @@ end
 
 function node.render()
     gl.clear(0, 0, 0, 1)
+    if not screen_on then
+        return
+    end
     local now = sys.now()
     tick(now)
 
