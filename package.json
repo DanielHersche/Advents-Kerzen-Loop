@@ -1,5 +1,9 @@
 {
     "name": "Kerzen Loop Player",
     "author": "XTRA",
-    "desc": "Spielt mehrere Videos nacheinander, jedes nahtlos geloopt fuer eine frei waehlbare Dauer."
+    "desc": "Spielt mehrere Videos nacheinander, jedes nahtlos geloopt fuer eine frei waehlbare Dauer.",
+    "platforms": [
+        "pi-4",
+        "pi-5"
+    ]
 }
