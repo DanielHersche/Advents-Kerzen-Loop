@@ -1,13 +1,32 @@
 #!/usr/bin/python2.7
-# Kerzen Loop Player - Zeitsteuerung
-# Schaltet den Bildschirm zur eingestellten Zeit aus und wieder ein.
-import os, sys, json, time, socket
-from datetime import datetime
-import pytz
+# -*- coding: utf-8 -*-
+# Kerzen Loop Player - Zeitsteuerung mit Beamer-Test (HDMI-CEC und PJLink)
+#
+# Weg 1 - HDMI-CEC ("tv off" / "tv on" ueber info-beamer):
+#   info-beamer schaltet den HDMI-Ausgang ab und schickt dabei einen CEC-Standby-Befehl.
+#   Beim Einschalten kommt das Signal zurueck, zusammen mit einem CEC-Einschaltbefehl.
+#   Der Beamer reagiert nur, wenn dort [HDMI CEC] = EIN und
+#   [GERAET -> PROJEKTOR] = [EIN-/AUSSCHALTEN] eingestellt ist.
+#
+# Weg 2 - PJLink (Netzwerk, TCP-Port 4352):
+#   Der Dienst verbindet sich mit dem Beamer und sendet "%1POWR 0" (Standby) bzw. "%1POWR 1" (ein).
+#   Alle 30 s wird der Zustand abgefragt ("%1POWR ?") und bei Bedarf korrigiert.
+#   Braucht: Beamer per LAN im selben Netz, feste IP, [PJLink STEUERUNG] = EIN, PJLink-Passwort.
+#
+# Jeder Schritt wird protokolliert (Zeilen "[beamer-test] ...").
+import os, sys, json, time, socket, hashlib
+from datetime import datetime, timedelta, date
+
+try:
+    import pytz
+except Exception:
+    pytz = None
+
 
 def log(msg):
-    sys.stderr.write("[zeitplan] %s\n" % (msg,))
+    sys.stderr.write("[beamer-test] %s\n" % (msg,))
     sys.stderr.flush()
+
 
 def load_config():
     try:
@@ -17,9 +36,10 @@ def load_config():
         log("config.json nicht lesbar: %s" % (err,))
         return {}
 
+
 def parse_hm(value, default):
     try:
-        h, m = str(value).strip().replace(".", ":").split(":")
+        h, m = str(value).strip().replace(".", ":").split(":")[:2]
         h, m = int(h), int(m)
         if 0 <= h <= 23 and 0 <= m <= 59:
             return h * 60 + m
@@ -27,24 +47,28 @@ def parse_hm(value, default):
         pass
     return default
 
-def syncer(cmd):
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(os.getenv("SYNCER_SOCKET", "/tmp/syncer"))
-        s.send(cmd + "\n")
-        s.close()
-    except Exception as err:
-        log("Befehl '%s' fehlgeschlagen: %s" % (cmd, err))
 
-udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-def node_send(state):
-    try:
-        udp.sendto("%s/power:%s" % (os.getenv("NODE", "root"), state),
-                   ("127.0.0.1", 4444))
-    except Exception as err:
-        log("Senden an Node fehlgeschlagen: %s" % (err,))
+def _last_sunday(year, month):
+    d = date(year, month + 1, 1) - timedelta(days=1)
+    return d - timedelta(days=(d.weekday() + 1) % 7)
 
-def should_be_on(config, now):
+
+def local_now(config):
+    tzname = (config.get("__metadata") or {}).get("timezone") or "Europe/Zurich"
+    if pytz is not None:
+        try:
+            tz = pytz.timezone(tzname)
+        except Exception:
+            tz = pytz.timezone("Europe/Zurich")
+        return pytz.utc.localize(datetime.utcnow()).astimezone(tz)
+    # Ersatz ohne pytz: MEZ/MESZ
+    utc = datetime.utcnow()
+    start = datetime.combine(_last_sunday(utc.year, 3), datetime.min.time()) + timedelta(hours=1)
+    end = datetime.combine(_last_sunday(utc.year, 10), datetime.min.time()) + timedelta(hours=1)
+    return utc + timedelta(hours=2 if start <= utc < end else 1)
+
+
+def schedule_on(config, now):
     if not config.get("schedule_enabled", True):
         return True
     off_at = parse_hm(config.get("off_time", "22:30"), 22 * 60 + 30)
@@ -53,37 +77,148 @@ def should_be_on(config, now):
     if off_at == on_at:
         return True
     if off_at > on_at:
-        # z.B. aus 22:30, an 07:30 (ueber Mitternacht)
         return not (minute >= off_at or minute < on_at)
     return not (off_at <= minute < on_at)
 
-def local_now(config):
-    tzname = config.get("__metadata", {}).get("timezone") or "Europe/Zurich"
+
+def want_on(config, now):
+    mode = config.get("beamer_mode", "auto")
+    if mode == "an":
+        return True, "Test: sofort EIN"
+    if mode == "aus":
+        return False, "Test: sofort STANDBY"
+    on = schedule_on(config, now)
+    return on, "Zeitplan (aus %s / ein %s)" % (config.get("off_time"), config.get("on_time"))
+
+
+# --- Weg 1: HDMI-CEC ueber info-beamer ------------------------------------
+
+def syncer(cmd):
     try:
-        tz = pytz.timezone(tzname)
-    except Exception:
-        tz = pytz.timezone("Europe/Zurich")
-    return pytz.utc.localize(datetime.utcnow()).astimezone(tz)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(os.getenv("SYNCER_SOCKET", "/tmp/syncer"))
+        s.send(cmd + "\n")
+        s.close()
+        log("CEC: '%s' gesendet" % cmd)
+    except Exception as err:
+        log("CEC: '%s' fehlgeschlagen: %s" % (cmd, err))
 
-# Bis die Uhrzeit synchronisiert ist, bleibt der Bildschirm an
-syncer("tv on")
-node_send("on")
-while time.time() < 1000000000:
-    log("warte auf korrekte Systemzeit")
-    time.sleep(5)
 
-current = None
-last_tv = 0
-while True:
-    config = load_config()
-    now = local_now(config)
-    on = should_be_on(config, now)
-    state = "on" if on else "off"
-    node_send(state)
-    # TV-Befehl bei Wechsel senden und alle 10 Minuten wiederholen
-    if state != current or time.time() - last_tv > 600:
-        log("%s -> Bildschirm %s" % (now.strftime("%Y-%m-%d %H:%M"), state))
-        syncer("tv " + state)
+# --- Weg 2: PJLink ----------------------------------------------------------
+
+POWR_TEXT = {"0": "Standby", "1": "EIN", "2": "kuehlt ab", "3": "waermt auf",
+             "ERR1": "unbekannter Befehl", "ERR2": "ungueltiger Parameter",
+             "ERR3": "gerade nicht moeglich", "ERR4": "Beamer-Fehler", "OK": "OK"}
+
+
+def _readline(s):
+    buf = ""
+    while not buf.endswith("\r"):
+        chunk = s.recv(256)
+        if not chunk:
+            break
+        buf += chunk
+    return buf.strip()
+
+
+def pjlink(ip, password, cmd):
+    s = socket.create_connection((ip, 4352), timeout=5)
+    try:
+        greet = _readline(s)
+        prefix = ""
+        if greet.startswith("PJLINK 1"):
+            prefix = hashlib.md5(greet.split()[2] + (password or "")).hexdigest()
+        elif not greet.startswith("PJLINK 0"):
+            raise Exception("unerwartete Begruessung: %r" % greet)
+        s.sendall(prefix + cmd + "\r")
+        answer = _readline(s)
+        if answer.startswith("PJLINK ERRA"):
+            raise Exception("PJLink-Passwort falsch")
+        return answer
+    finally:
+        s.close()
+
+
+def pjlink_value(answer):
+    return answer.split("=", 1)[-1] if "=" in answer else answer
+
+
+last_pj_status = [None]
+
+
+def pjlink_ensure(config, on, force_log=False):
+    ip = str(config.get("pjlink_ip", "") or "").strip()
+    if not ip:
+        log("PJLink: keine IP-Adresse eingetragen")
+        return
+    pw = str(config.get("pjlink_pw", "") or "")
+    try:
+        status = pjlink_value(pjlink(ip, pw, "%1POWR ?"))
+        if status != last_pj_status[0] or force_log:
+            log("PJLink %s: Zustand %s (%s)" % (ip, status, POWR_TEXT.get(status, "?")))
+            last_pj_status[0] = status
+        if on and status == "0":
+            r = pjlink_value(pjlink(ip, pw, "%1POWR 1"))
+            log("PJLink: Einschalten gesendet -> %s (%s)" % (r, POWR_TEXT.get(r, "?")))
+        elif not on and status in ("1", "3"):
+            r = pjlink_value(pjlink(ip, pw, "%1POWR 0"))
+            log("PJLink: Standby gesendet -> %s (%s)" % (r, POWR_TEXT.get(r, "?")))
+    except Exception as err:
+        log("PJLink %s nicht erreichbar: %s" % (ip, err))
+
+
+# --- an node.lua melden (schwarz, solange aus) ------------------------------
+
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+
+def node_send(state):
+    try:
+        udp.sendto("%s/power:%s" % (os.getenv("NODE", "root"), state), ("127.0.0.1", 4444))
+    except Exception as err:
+        log("Senden an Node fehlgeschlagen: %s" % (err,))
+
+
+def main():
+    node_send("on")
+    while time.time() < 1000000000:
+        log("warte auf korrekte Systemzeit")
+        time.sleep(5)
+
+    current = None
+    last_cfg = None
+    last_pj = 0
+    last_cec = 0
+    while True:
+        config = load_config()
+        now = local_now(config)
+        on, reason = want_on(config, now)
+        state = "on" if on else "off"
+        node_send(state)
+
+        use_cec = config.get("cec", True)
+        use_pj = config.get("pjlink", False)
+        cfg_key = (use_cec, use_pj, config.get("pjlink_ip"), config.get("beamer_mode"))
+        changed = state != current
+        if changed or cfg_key != last_cfg:
+            log("%s -> Beamer soll %s sein | %s | Wege: CEC %s, PJLink %s" % (
+                now.strftime("%Y-%m-%d %H:%M:%S"), "EIN" if on else "STANDBY", reason,
+                "ja" if use_cec else "nein", "ja" if use_pj else "nein"))
+
+        if use_cec and (changed or cfg_key != last_cfg or time.time() - last_cec > 600):
+            syncer("tv " + state)
+            last_cec = time.time()
+        elif not use_cec and cfg_key != last_cfg and last_cfg is not None and last_cfg[0]:
+            # CEC wurde abgewaehlt: HDMI-Signal wieder einschalten, damit nur PJLink wirkt
+            syncer("tv on")
+        if use_pj and (changed or cfg_key != last_cfg or time.time() - last_pj > 30):
+            pjlink_ensure(config, on, force_log=changed)
+            last_pj = time.time()
+
         current = state
-        last_tv = time.time()
-    time.sleep(20)
+        last_cfg = cfg_key
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

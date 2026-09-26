@@ -77,6 +77,57 @@
             "name": "on_time",
             "type": "string",
             "default": "07:30"
+        },
+        {
+            "title": "Beamer-Steuerung (Test)",
+            "type": "section"
+        },
+        {
+            "title": "Beamer jetzt",
+            "name": "beamer_mode",
+            "type": "select",
+            "default": "auto",
+            "options": [
+                [
+                    "auto",
+                    "Automatisch nach Zeitplan oben"
+                ],
+                [
+                    "an",
+                    "Sofort EIN (Test)"
+                ],
+                [
+                    "aus",
+                    "Sofort STANDBY (Test)"
+                ]
+            ]
+        },
+        {
+            "title": "HDMI-CEC verwenden (Signal aus + CEC-Standby / Signal an + CEC-Einschalten)",
+            "name": "cec",
+            "type": "boolean",
+            "default": true
+        },
+        {
+            "title": "PJLink verwenden",
+            "name": "pjlink",
+            "type": "boolean",
+            "default": false
+        },
+        {
+            "title": "PJLink: IP-Adresse des Beamers",
+            "name": "pjlink_ip",
+            "type": "string",
+            "default": ""
+        },
+        {
+            "title": "PJLink: Passwort",
+            "name": "pjlink_pw",
+            "type": "string",
+            "default": ""
         }
-    ]
+    ],
+    "permissions": {
+        "network": "PJLink: Beamer im lokalen Netz ein- und ausschalten (TCP-Port 4352)"
+    }
 }
